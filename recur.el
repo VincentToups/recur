@@ -1,3 +1,14 @@
+;;; recur.el --- support for self tail call optimization.
+
+;; Copyright (C) 2012 Vincent Toups
+
+;; Author: Vincent Toups <vincent.toups@gmail.com>
+;; Maintainer: Vincent Toups <vincent.toups@gmail.com>
+;; Created: 23 March 2012
+;; Version: 1.0
+;; Keywords: elisp, language extension, recursion
+
+
 (require 'cl)
 (provide 'recur)
 
@@ -58,94 +69,117 @@ with the pre-token list and subsequent elements list."
 
 
 (defmacro* recur:with-gensyms ((&rest syms) &body body)
+  "Create a context with gensyms bound to the symbols SYMS."
   (if (not syms) `(progn ,@body)
     `(let ((,(car syms) (gensym "recur:with-gensyms")))
        (recur:with-gensyms ,(cdr syms) ,@body))))
 
 (defun recur:alist (alist key)
+  "Given an alist and a key, return the element stored in the
+CADR of the association.  Note that this is divergent from the
+usual association list, where the data is stored in the CDR."
   (cadr (assoc key alist )))
 
 (defun recur:remove-keyed (key alist)
+  "Remove elements from an alist if they have KEY."
   (loop for (key* val) in alist when 
-	(not (equal key key*))
-	collect (list key* val)))
+		(not (equal key key*))
+		collect (list key* val)))
 
 (defun recur:alist>> (maybe-alist &rest k/v-pairs)
+  "Return an alist with data in the CADR of each element, created
+from the key/value pairs passed in.  If the initial element is a
+list, treat it as an alist and add the bindings."
   (if (not (listp maybe-alist))
       (apply #'recur:alist>> nil maybe-alist k/v-pairs)
     (if (not k/v-pairs) maybe-alist
       (destructuring-bind 
-	  (key val &rest k/v-pairs) k/v-pairs
-	(apply #'recur:alist>> 
-	       (cons (list key val) 
-		     (recur:remove-keyed key maybe-alist))
-	       k/v-pairs)))))
+		  (key val &rest k/v-pairs) k/v-pairs
+		(apply #'recur:alist>> 
+			   (cons (list key val) 
+					 (recur:remove-keyed key maybe-alist))
+			   k/v-pairs)))))
 
 (defun recur:par (f &rest applied-args)
+  "Partially apply APPLIED-ARGS to the right most side of the
+argument list for F.  Return a new function waiting for arguments
+to go on the left side."
   (lexical-let ((f f)
-		(applied-args applied-args))
+				(applied-args applied-args))
     (lambda (&rest unapplied-args)
       (apply f (append unapplied-args applied-args)))))
 
 (defun recur:flatten-once (list)
+  "Pull elements of list which are lists into the outer list."
   (loop for item in list append 
-	(if (listp item) item (list item))))
+		(if (listp item) item (list item))))
 
 (defun recur:zip (&rest lists)
+  "Given N lists return a list of objects with N elements."
   (apply #'mapcar* (lambda (&rest args) args) lists))
 
 (defun recur:get-let-body (expression)
+  "Retrieve the body of a let expression."
   (cddr expression))
 
 (defun recur:get-let-binders (expression)
+  "Return the binding part of a let expression."
   (cadr expression))
 
 (defun recur:comp (&rest fs)
+  "Compose the functions in FS, right most applied first."
   (lexical-let ((fs (reverse fs)))
     (lambda (&rest args)
       (let ((result (apply (car fs) args)))
-	(loop for f in (cdr fs) do 
-	      (setq result (funcall f result)))
-	result))))
+		(loop for f in (cdr fs) do 
+			  (setq result (funcall f result)))
+		result))))
 
 (defun recur:let/*p (o)
+  "Return T when o is an expression in the let-family."
   (and (listp o)
        (let ((car (car o)))
-	 (or (eq car 'let)
-	     (eq car 'let*)))))
+		 (or (eq car 'let)
+			 (eq car 'let*)))))
 
 (defun recur:quotep (o)
+  "Return T when O is a quoted expression."
   (and (listp o)
        (eq (car o) 'quote)))
 
 (defun recur:prog-like (o)
+  "Return T with o is a PROGN like expression."
   (and (listp o)
        (let ((car (car o)))
-	 (or 
-	  (eq car 'progn)
-	  (eq car 'prog1)))))
+		 (or 
+		  (eq car 'progn)
+		  (eq car 'prog1)))))
 
 (defun recur:ifp (o)
+  "Return T when o is an IF-like expression."
   (and (listp o)
        (eq (car o) 'if)))
 
 (defun recur:condp (o)
+  "Return T when O is a COND-like expression."
   (and (listp o)
        (eq (car o) 'cond)))
 
 (defun recur:fletp (o)
+  "Return T when o is an FLET expression."
   (and (listp o)
        (eq (car o) 'flet)))
 
-(defmacro* recur:dont-do (&body body) nil)
+(defmacro* recur:dont-do (&body body)
+  "Don't do the body." nil)
 
 (defun simple-expand-recur-progn (code symbols in-tail loop-sentinal)
   "Handle expansion of tail recursion for a PROGN form."
   (let* ((r-code (reverse (cdr code)))
-	 (tail (car r-code))
-	 (rest (cdr r-code)))
+		 (tail (car r-code))
+		 (rest (cdr r-code)))
     `(progn ,@(reverse (cons (simple-expand-recur tail symbols in-tail loop-sentinal)
-			     (mapcar (recur:par #'simple-expand-recur symbols nil nil) rest))))))
+							 (mapcar (recur:par #'simple-expand-recur symbols nil nil) rest))))))
 
 (defun simple-recurp (form)
   "Test to see if this is a recur form."
@@ -156,7 +190,7 @@ with the pre-token list and subsequent elements list."
   "Expand a RECUR form.  Might be useful to shadow for special kinds of recursion bindings."
   (if (not in-tail) (error "The recur form %S is not in a tail position, can't expand." code))
   (let* ((val-exprs (cdr code))
-	 (psetq-forms (recur:flatten-once (recur:zip (cons loop-sentinal symbols) (cons t val-exprs)))))
+		 (psetq-forms (recur:flatten-once (recur:zip (cons loop-sentinal symbols) (cons t val-exprs)))))
     `(psetq ,@psetq-forms)))
 
 
@@ -164,44 +198,44 @@ with the pre-token list and subsequent elements list."
 (defun simple-expand-recur-let-like (form symbols in-tail loop-sentinal)
   "Handle recursion expansion for LET forms."
   (let* ((body (cdr (simple-expand-recur `(progn ,@(recur:get-let-body form)) symbols in-tail loop-sentinal)))
-	 (bindings (recur:get-let-binders form))
-	 (symbols (mapcar #'car bindings))
-	 (expressions (mapcar 
-		       (recur:comp (recur:par #'simple-expand-recur nil nil nil) #'cadr) 
-		       bindings))
-	 (bindings (recur:zip symbols expressions)))
+		 (bindings (recur:get-let-binders form))
+		 (symbols (mapcar #'car bindings))
+		 (expressions (mapcar 
+					   (recur:comp (recur:par #'simple-expand-recur nil nil nil) #'cadr) 
+					   bindings))
+		 (bindings (recur:zip symbols expressions)))
     `(,(car form) ,bindings ,@body)))
 
 (defun simple-expand-recur-if (form symbols in-tail loop-sentinal)
   "Handle recursion expansion for IF forms."
   (let* ((predicate-expr (simple-expand-recur (elt form 1) nil nil nil))
-	 (true-branch 
-	  (simple-expand-recur (elt form 2) symbols in-tail loop-sentinal))
-	 (false-branch 
-	  (simple-expand-recur (elt form 3) symbols in-tail loop-sentinal)))
+		 (true-branch 
+		  (simple-expand-recur (elt form 2) symbols in-tail loop-sentinal))
+		 (false-branch 
+		  (simple-expand-recur (elt form 3) symbols in-tail loop-sentinal)))
     `(if ,predicate-expr ,true-branch ,false-branch)))
 
 (defun simple-expand-recur-cond (form symbols in-tail loop-sentinal)
   "Handle recursion expansion for COND forms."
   `(cond ,@(loop for sub-form in (cdr form)
-		 collect
-		 (let ((condition (car sub-form))
-		       (body (cdr sub-form)))
-		   `(
-		     ,(simple-expand-recur condition symbols nil nil)
-		     ,@(cdr (simple-expand-recur
-			     `(progn ,@body) symbols in-tail loop-sentinal)))))))
+				 collect
+				 (let ((condition (car sub-form))
+					   (body (cdr sub-form)))
+				   `(
+					 ,(simple-expand-recur condition symbols nil nil)
+					 ,@(cdr (simple-expand-recur
+							 `(progn ,@body) symbols in-tail loop-sentinal)))))))
 
 (defun simple-expand-recur-funcall (code symbols in-tail loop-sentinal)
   "Handle recursion expansion for FUNCALL forms.  The de-facto default when the head of a list is not recognized."
   (let ((f (car code))
-	(args (mapcar (recur:par #'simple-expand-recur symbols nil loop-sentinal) (cdr code))))
+		(args (mapcar (recur:par #'simple-expand-recur symbols nil loop-sentinal) (cdr code))))
     `(,f ,@args)))
 
 (defun simple-expand-recur-flet (code symbols in-tail loop-sentinal)
   "Handle recursion expansion for FLET forms."
   (let ((bindings (elt code 1))
-	(body (cddr code)))
+		(body (cddr code)))
     `(flet ,bindings
        ,@(cdr (simple-expand-recur (cons 'progn body) symbols in-tail loop-sentinal)))))
 
@@ -296,37 +330,29 @@ a loop continues. Building this loop is handled by the caller."
 (defun setq-ll-rest-part (table)
   "Build a rest part of a lambda list table."
   (let* ((rest (recur:alist table :rest))
-	 (name (car rest))
-	 (forms (cadr rest)))
+		 (name (car rest))
+		 (forms (cadr rest)))
     (if name
-	`(,name (list ,@forms)) nil)))
-
-;; (defmacro setq-lambda-list (lambda-list &rest args)
-;;   "Set variables with specifications from a lambda-list (common-lisp-style)."
-;;   (if (not (listp lambda-list)) (error "lambda-list must be a static list conforming to the lambda lisp specifier."))
-;;   (let* ((parser (eval `(lambda-list-parsing-lambda ,lambda-list)))
-;; 	 (table (apply parser args)))
-;;     `(psetq ,@(setq-ll-normal-part table) ,@(setq-ll-optional-part table)
-;; 	    ,@(setq-ll-key-part table) ,@(setq-ll-rest-part table))))
+		`(,name (list ,@forms)) nil)))
 
 (defmacro recur-let (bindings &rest body)
   "Like let, but allows recursion, as if the let form was itself a function which can be called from inside itself."
   (let* ((loop-sentinal (gensym "recur-loop-sentinal-"))
-	 (symbols (mapcar #'car bindings))
-	 (return-value (gensym "recur-loop-return-value-"))
-	 (expressions (mapcar #'cdr bindings)))
+		 (symbols (mapcar #'car bindings))
+		 (return-value (gensym "recur-loop-return-value-"))
+		 (expressions (mapcar #'cdr bindings)))
     `(let ((,loop-sentinal t)
-	   (,return-value nil))
+		   (,return-value nil))
        (let ,bindings
-	 (while ,loop-sentinal 
-	   (setq ,loop-sentinal nil)
-	   (setq ,return-value 
-		 ,(simple-expand-recur 
-		   (macroexpand-all 
-		    (cons 'progn body)) 
-		   symbols 
-		   t 
-		   loop-sentinal))))
+		 (while ,loop-sentinal 
+		   (setq ,loop-sentinal nil)
+		   (setq ,return-value 
+				 ,(simple-expand-recur 
+				   (macroexpand-all 
+					(cons 'progn body)) 
+				   symbols 
+				   t 
+				   loop-sentinal))))
        ,return-value)))
 
 (defun simple-expand-recur-recur-lambda-list (code in-tail loop-sentinal lambda-list)
@@ -337,40 +363,36 @@ a loop continues. Building this loop is handled by the caller."
        (setq ,loop-sentinal t)
        ,(macroexpand-all `(recur:destructuring-set ,lambda-list (list ,@val-exprs))))))
 
-(recur:dont-do
- (macroexpand-all (simple-expand-recur-recur-lambda-list '(recur 1 (+ 2 b) 3) t 'loop-sent '(a b &rest c))))
-
 (defmacro* recur-defun* (name arglist &body body)
   "Define a recur-enabled function.  It can call itself with a RECUR form without growing the stack.
 Otherwise conforms to a Common-Lisp style defun form."
   (declare (indent defun))
   (let* ((doc (if (stringp (car body)) (car body) ""))
-	 (body (if (stringp (car body)) (cdr body) body)))
+		 (body (if (stringp (car body)) (cdr body) body)))
     (recur:with-gensyms 
      (loop-sentinal return-value)
      (lexical-let ((recur-defun-arglist arglist))
        (let ((expanded-body (macroexpand-all body)))
-	 `(defun* ,name ,arglist 
-	    ,doc
-	    (let ((,loop-sentinal t)
-		  (,return-value nil))
-	      (while ,loop-sentinal 
-		(setq ,loop-sentinal nil)
-		(setq ,return-value 
-		      ,(flet
-			   ((simple-expand-recur-recur (code symbols in-tail loop-sentinal)
-						       (simple-expand-recur-recur-lambda-list code in-tail loop-sentinal recur-defun-arglist)))
-			 (simple-expand-recur 
-			  (macroexpand-all 
-			   (cons 'progn body)) 
-			  nil 
-			  t 
-			  loop-sentinal))))
-	      ,return-value)))))))
-;; (dont-do 
-;;  (recur-defun* eleven (&optional (x 0)) "counts to eleven" (if (< x 11) (recur (+ x 1)) x)))
+		 `(defun* ,name ,arglist 
+			,doc
+			(let ((,loop-sentinal t)
+				  (,return-value nil))
+			  (while ,loop-sentinal 
+				(setq ,loop-sentinal nil)
+				(setq ,return-value 
+					  ,(flet
+						   ((simple-expand-recur-recur (code symbols in-tail loop-sentinal)
+													   (simple-expand-recur-recur-lambda-list code in-tail loop-sentinal recur-defun-arglist)))
+						 (simple-expand-recur 
+						  (macroexpand-all 
+						   (cons 'progn body)) 
+						  nil 
+						  t 
+						  loop-sentinal))))
+			  ,return-value)))))))
 
 (recur:dont-do 
+ ;; an example
  (recur-let 
   ((x 0))
   (if (< x 10) (recur (+ x 1)) x)))
