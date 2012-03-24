@@ -1,11 +1,61 @@
-;; (require 'macro-utils)
-;; (require 'utils)
-;; (require 'functional)
-;; (require 'parse-lambda-list)
-;; (require 'lambda-star)
 (require 'cl)
-(require 'destructuring-set)
 (provide 'recur)
+
+(defun recur:lambda-list-token (o)
+  "Return t when o is a lambda list token."
+  (or (eq o '&rest)
+      (eq o '&key)
+      (eq o '&optional)))
+
+(defun recur:split-at-destruct-token (list)
+  "Split the list LIST at any lambda-list token.  Returns a list
+with the pre-token list and subsequent elements list."
+  (assert (listp list)
+	  ()
+	  "recur:split-at-destruct-token expects a list.")
+  (loop with pre = nil 
+	while (and list (not (recur:lambda-list-token (car list))))
+	do
+	(push (pop list) pre)
+	finally 
+	(return (list (reverse pre)
+		      list))))
+
+(defun recur:collect-bindings (lambda-list)
+  "Recursively collect all the bindings implied by the LAMBDA-LIST."
+  (when lambda-list
+    (let ((last-signifier :regular))
+      (loop for item in lambda-list append 
+	    (cond 
+	     ((recur:lambda-list-token item)
+	      (setq last-signifier item)
+	      nil)
+	     (:otherwise 
+	      (case last-signifier 
+		((:regular &rest)
+		 (if (symbolp item)
+		     (list item)
+		   (recur:collect-bindings item)))
+		((&key &optional)
+		 (if (symbolp item)
+		     (list item)
+		   (let ((item (car item)))
+		     (if (symbolp item)
+			 (list item)
+		       (recur:collect-bindings item))))))))))))
+
+(defmacro recur:destructuring-set 
+  (binding value)
+  "Like destructuring-bind, but sets the values in the current scope."
+  (let ((values-flat-name (gensym))
+	(bound-names (recur:collect-bindings binding)))
+    `(let ((,values-flat-name
+	    (destructuring-bind ,binding ,value
+	      (vector ,@bound-names))))
+       ,@(loop for sym in bound-names and
+	       i from 0 collect
+	       `(setq ,sym (elt ,values-flat-name ,i))))))
+
 
 (defmacro* recur:with-gensyms ((&rest syms) &body body)
   (if (not syms) `(progn ,@body)
@@ -285,7 +335,7 @@ a loop continues. Building this loop is handled by the caller."
   (let* ((val-exprs (cdr code)))
     `(progn
        (setq ,loop-sentinal t)
-       ,(macroexpand-all `(destructuring-set ,lambda-list (list ,@val-exprs))))))
+       ,(macroexpand-all `(recur:destructuring-set ,lambda-list (list ,@val-exprs))))))
 
 (recur:dont-do
  (macroexpand-all (simple-expand-recur-recur-lambda-list '(recur 1 (+ 2 b) 3) t 'loop-sent '(a b &rest c))))
