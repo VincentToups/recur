@@ -1,5 +1,27 @@
 recur-defun and recur-let
--------------------------
+=========================
+
+TL;DR
+-----
+
+This is an extension to elisp which lets you write limited recursion
+without blowing the stack.  Eg:
+
+    (recur-defun* my-prod (list &optional (acc 1))
+      (if list (recur (cdr list) (* acc (car list)))
+          acc))
+    (my-prod (list 1 2 3 4)) 
+
+Can calculate the product of a list of elements without ever blowing
+the stack.  These forms expand to loops.  The recursion is limited to
+self-recursion. 
+
+It is completely stand alone (although it requires `cl.el`), which is
+the major improvement over the last version, which required all of my
+trashy utils.  
+
+Context
+-------
 
 When I first encountered clojure's limited tail call optimization, in
 the form of "recur" forms inside functions and loops, I was a bit
